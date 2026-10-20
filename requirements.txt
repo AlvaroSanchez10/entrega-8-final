@@ -1,0 +1,11 @@
+langgraph
+langchain
+langchain-openai
+python-dotenv
+pytest
+fastapi
+uvicorn[standard]
+redis
+langgraph-checkpoint-redis
+langsmith
+httpx

@@ -1,0 +1,38 @@
+
+[
+  {
+    "order_id": 1001,
+    "customer_id": 102,
+    "customer": "Ana Martínez",
+    "date": "2026-09-01",
+    "total": 4500
+  },
+  {
+    "order_id": 1002,
+    "customer_id": 102,
+    "customer": "Ana Martínez",
+    "date": "2026-09-03",
+    "total": 6000
+  },
+  {
+    "order_id": 1003,
+    "customer_id": 102,
+    "customer": "Ana Martínez",
+    "date": "2026-09-05",
+    "total": 4000
+  },
+  {
+    "order_id": 2001,
+    "customer_id": 205,
+    "customer": "Carlos Gómez",
+    "date": "2026-09-02",
+    "total": 7000
+  },
+  {
+    "order_id": 2002,
+    "customer_id": 205,
+    "customer": "Carlos Gómez",
+    "date": "2026-09-06",
+    "total": 4000
+  }
+]
