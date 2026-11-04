@@ -126,7 +126,21 @@ Proyecto LangSmith configurado: `ai-engineering-trabajo-final`.
 
 Traza de línea base: `01a1a691-6ad7-7361-833a-5d81edbcd5a0`. La aprobación posterior quedó registrada como otra traza: `01a1a697-7625-764f-92ba-3255989a1092`. La traza del error antiguo es `01a1a68e-5ca7-710d-92e1-8d95f9a2d4e2`.
 
-**Pendiente de medir**: una ejecución posterior a la optimización, uso de tokens, número de herramientas, latencias y capturas de **cinco trazas** exigidas en la consigna. No atribuir mejoras cuantificadas sin ejecutar esas mediciones.
+**Medición posterior a la optimización** (misma consulta documental sobre Redis, trazas de ejecución y reanudación):
+
+| Métrica | Antes | Después | Variación aproximada |
+|---|---:|---:|---:|
+| Llamadas LLM | 20 | 4 | -80,0 % |
+| Tokens LLM registrados | 28.913 | 3.509 | -87,9 % |
+| Duración de trazas (ejecución + reanudación) | 30,79 s* | 8,82 s | -71,4 %** |
+| Llamadas a la herramienta documental | 5 | 1 | -80,0 % |
+| Herramientas comerciales innecesarias | 1 | 0 | Eliminada |
+
+* La medición anterior de 30,79 s corresponde a la ejecución principal previa a la aprobación; la reanudación anterior se registró por separado. ** La comparación de duraciones es orientativa, porque el tiempo posterior suma ejecución (8,79 s) más reanudación (0,03 s). No equivale a medir el tiempo de espera humana ni constituye un benchmark estadístico. Todas las métricas corresponden a ejecuciones individuales, no promedios.
+
+Trazas posteriores: ejecución `01a1a6c8-0acb-779e-a62d-1158ab10c9bd` y reanudación `01a1a6ca-5001-7696-b581-35c58d23b6b3`.
+
+Ver [evidencias/README.md](evidencias/README.md) para capturas y referencias exactas. Las cinco capturas seleccionadas documentan el sistema, pero **no constituyen cinco ejecuciones independientes**; para cumplir literalmente un requisito de cinco trazas independientes, se deben identificar/documentar cinco trazas válidas con sus IDs, idealmente cubriendo distintos escenarios. No presentar capturas de tests como ejecuciones de producción.
 
 La carpeta `screenshots/` contiene capturas antiguas de la Pre-entrega 7 y no debe presentarse como evidencia de la versión final sin verificar fecha y correspondencia.
 
