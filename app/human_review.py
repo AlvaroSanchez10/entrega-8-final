@@ -1,13 +1,10 @@
 from langgraph.types import interrupt
 
-
 def human_review_node(state):
     decision = interrupt({
-        "mensaje": "El análisis terminó. Se requiere aprobación humana antes de finalizar.",
+        "mensaje": "Resultado preparado. Requiere aprobación humana antes de finalizar.",
         "resumen": state["messages"][-1].content,
     })
-
-    if decision.get("approved") is not True:
-        raise ValueError("La ejecución fue rechazada por el revisor humano.")
-
-    return {}
+    if not isinstance(decision, dict) or not isinstance(decision.get("approved"), bool):
+        raise ValueError("La revisión requiere una decisión booleana explícita")
+    return {"review_decision": "approved" if decision["approved"] else "rejected"}

@@ -1,4 +1,3 @@
-
 import json
 
 from langchain_core.messages import AIMessage, ToolMessage
@@ -14,24 +13,36 @@ investigador = crear_investigador(modelo)
 analista = crear_analista(modelo)
 
 
-def ejecutar_especialista(state: AgentState, agente, nombre: str) -> dict:
-    """Ejecuta un especialista y registra su contribución."""
+async def ejecutar_especialista(
+    state: AgentState,
+    agente,
+    nombre: str,
+) -> dict:
+    """Ejecuta un especialista de manera asíncrona."""
 
     solicitud_original = state["messages"][0].content
     contribuciones = state.get("contributions", [])
 
     contexto = "\n".join(
-        f"{item['agent']}: {item['content']}"
-        for item in contribuciones
+        f"{item['agent']}: {item['content'][:3000]}"
+        for item in contribuciones if item["agent"] in ("research", "analyst")
     )
 
+    modo = state.get("research_mode", "no definido")
+    especificacion = (
+        f"Modo: {modo}. "
+        "Utilizá consultar_documentacion para documentos técnicos y buscar_pedidos "
+        "para pedidos comerciales; no uses herramientas ajenas a la solicitud."
+        if nombre == "research"
+        else "Utilizá analizar_pedidos solo para los cálculos solicitados."
+    )
     instruccion = (
         f"Solicitud original:\n{solicitud_original}\n\n"
         f"Resultados anteriores:\n{contexto or 'Ninguno'}\n\n"
-        "Realizá únicamente tu tarea especializada."
+        f"{especificacion}"
     )
 
-    resultado = agente.invoke({
+    resultado = await agente.ainvoke({
         "messages": [
             {"role": "user", "content": instruccion}
         ]
@@ -40,7 +51,6 @@ def ejecutar_especialista(state: AgentState, agente, nombre: str) -> dict:
     mensajes = resultado["messages"]
     respuesta = mensajes[-1].content
 
-    # Registramos las herramientas realmente ejecutadas.
     herramientas = [
         mensaje.name
         for mensaje in mensajes
@@ -73,9 +83,13 @@ def ejecutar_especialista(state: AgentState, agente, nombre: str) -> dict:
     }
 
 
-def research_node(state: AgentState) -> dict:
-    return ejecutar_especialista(state, investigador, "research")
+async def research_node(state: AgentState) -> dict:
+    return await ejecutar_especialista(
+        state, investigador, "research"
+    )
 
 
-def analyst_node(state: AgentState) -> dict:
-    return ejecutar_especialista(state, analista, "analyst")
+async def analyst_node(state: AgentState) -> dict:
+    return await ejecutar_especialista(
+        state, analista, "analyst"
+    )

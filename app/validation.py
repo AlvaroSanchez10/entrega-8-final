@@ -1,80 +1,25 @@
-
-import json
-
 from app.state import AgentState
-
-
-MAX_STEPS = 6
-
-REQUIRED_TOOLS = {
-    "research": "buscar_pedidos",
-    "analyst": "analizar_pedidos",
-}
-
+from app.supervisor import MAX_STEPS, completed_tools, required_tools
 
 def validation_node(state: AgentState) -> dict:
-    """Valida que ambos especialistas hayan usado sus herramientas."""
-
-    contributions = state.get("contributions", [])
+    mode = state.get("research_mode")
+    available = completed_tools(state)
+    missing = sorted(required_tools(state) - available)
     errors = []
-
-    for agent_name, required_tool in REQUIRED_TOOLS.items():
-        agent_contributions = [
-            item
-            for item in contributions
-            if item["agent"] == agent_name
-        ]
-
-        if not agent_contributions:
-            errors.append(
-                f"Falta la contribución del agente {agent_name}."
-            )
-            continue
-
-        tool_used = False
-
-        for contribution in agent_contributions:
-            try:
-                data = json.loads(contribution["content"])
-            except (json.JSONDecodeError, TypeError):
-                continue
-
-            tools_executed = data.get("tools_executed", [])
-            response = data.get("response", "")
-
-            if required_tool in tools_executed and response.strip():
-                tool_used = True
-                break
-
-        if not tool_used:
-            errors.append(
-                f"El agente {agent_name} no ejecutó "
-                f"correctamente {required_tool}."
-            )
-
-    validation_passed = len(errors) == 0
-    steps = state.get("steps", 0)
-
-    if validation_passed:
-        feedback = "Validación aprobada: ambos agentes ejecutaron sus herramientas."
-    else:
-        feedback = "Validación fallida: " + " ".join(errors)
-
+    if mode not in ("documentation", "orders", "both"):
+        errors.append("Plan de investigación ausente o inválido")
+    if missing:
+        errors.append("Herramientas faltantes: " + ", ".join(missing))
+    passed_validation = not errors
+    exhausted = state.get("steps", 0) >= MAX_STEPS
+    feedback = (
+        "Validación aprobada: evidencia de herramientas requerida presente."
+        if passed_validation else "Validación fallida: " + "; ".join(errors)
+    )
+    if not passed_validation and exhausted:
+        feedback += ". Se agotó el límite de intentos; no se genera respuesta aprobable."
     return {
-        "validation_passed": validation_passed,
-        "task_completed": validation_passed,
-        "contributions": [
-            {
-                "agent": "validation",
-                "content": feedback,
-            }
-        ],
-        "next_agent": (
-            "synthesis"
-            if validation_passed or steps >= MAX_STEPS
-            else "research" if any(
-                "research" in error for error in errors
-            )
-            else "analyst"
-        ),
+        "validation_passed": passed_validation,
+        "task_completed": passed_validation,
+        "contributions": [{"agent": "validation", "content": feedback}],
     }

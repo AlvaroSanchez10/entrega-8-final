@@ -1,4 +1,3 @@
-
 import asyncio
 import json
 import os
@@ -8,9 +7,9 @@ from uuid import uuid4
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
-from langgraph.checkpoint.redis import RedisSaver
+from langgraph.checkpoint.redis.aio import AsyncRedisSaver
 from langgraph.types import Command
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from redis.asyncio import Redis
 
 from app.graph import build_graph
@@ -20,7 +19,7 @@ load_dotenv(".env")
 
 
 class TaskRequest(BaseModel):
-    prompt: str
+    prompt: str = Field(min_length=1)
 
 
 class ApprovalRequest(BaseModel):
@@ -39,20 +38,25 @@ async def lifespan(app: FastAPI):
         decode_responses=True,
     )
 
-    with RedisSaver.from_conn_string(redis_url) as checkpointer:
-        checkpointer.setup()
+    try:
+        async with AsyncRedisSaver.from_conn_string(
+            redis_url
+        ) as checkpointer:
 
-        app.state.graph = build_graph(
-            checkpointer=checkpointer
-        )
+            await checkpointer.asetup()
 
-        yield
+            app.state.graph = build_graph(
+                checkpointer=checkpointer
+            )
 
-    await app.state.redis.aclose()
+            yield
+
+    finally:
+        await app.state.redis.aclose()
 
 
 app = FastAPI(
-    title="API de Agentes - Pre-entrega 7",
+    title="AI Engineering - Trabajo Final",
     lifespan=lifespan,
 )
 
@@ -72,10 +76,7 @@ async def save_task(job_id: str, data: dict):
 
 async def execute_task(job_id: str, graph_input):
     try:
-        await save_task(
-            job_id,
-            {"status": "RUNNING"},
-        )
+        await save_task(job_id, {"status": "RUNNING"})
 
         config = {
             "configurable": {
@@ -83,15 +84,13 @@ async def execute_task(job_id: str, graph_input):
             }
         }
 
-        result = await asyncio.to_thread(
-            app.state.graph.invoke,
+        result = await app.state.graph.ainvoke(
             graph_input,
             config,
         )
 
-        snapshot = await asyncio.to_thread(
-            app.state.graph.get_state,
-            config,
+        snapshot = await app.state.graph.aget_state(
+            config
         )
 
         if result.get("__interrupt__") or snapshot.next:
@@ -102,6 +101,30 @@ async def execute_task(job_id: str, graph_input):
                     "message": "La tarea espera aprobación humana.",
                 },
             )
+            return
+
+        if result.get("review_decision") == "rejected":
+            await save_task(
+                job_id,
+                {
+                    "status": "REJECTED",
+                    "message": "La ejecución fue rechazada por el revisor humano.",
+                },
+            )
+            return
+
+        if result.get("validation_passed") is False:
+            await save_task(job_id, {
+                "status": "FAILED",
+                "error": "La validación no se completó dentro del límite de intentos.",
+            })
+            return
+
+        if result.get("review_decision") != "approved":
+            await save_task(job_id, {
+                "status": "FAILED",
+                "error": "La ejecución terminó sin aprobación humana registrada.",
+            })
             return
 
         messages = result.get("messages", [])
@@ -121,22 +144,13 @@ async def execute_task(job_id: str, graph_input):
         )
 
     except Exception as error:
-        if str(error) == "La ejecución fue rechazada por el revisor humano.":
-            await save_task(
-                job_id,
-                {
-                    "status": "REJECTED",
-                    "message": str(error),
-                },
-            )
-        else:
-            await save_task(
-                job_id,
-                {
-                    "status": "FAILED",
-                    "error": str(error),
-                },
-            )
+        await save_task(
+            job_id,
+            {
+                "status": "FAILED",
+                "error": str(error),
+            },
+        )
 
 
 @app.post("/tasks")
@@ -191,9 +205,9 @@ async def approve_task(
     job_id: str,
     request: ApprovalRequest,
 ):
-    redis = app.state.redis
-
-    data = await redis.get(f"task:{job_id}")
+    data = await app.state.redis.get(
+        f"task:{job_id}"
+    )
 
     if data is None:
         raise HTTPException(
@@ -215,9 +229,8 @@ async def approve_task(
         }
     }
 
-    snapshot = await asyncio.to_thread(
-        app.state.graph.get_state,
-        config,
+    snapshot = await app.state.graph.aget_state(
+        config
     )
 
     if "human_review" not in snapshot.next:
@@ -236,7 +249,7 @@ async def approve_task(
             job_id,
             Command(
                 resume={
-                    "approved": request.approved,
+                    "approved": request.approved
                 }
             ),
         )

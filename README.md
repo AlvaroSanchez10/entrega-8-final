@@ -1,279 +1,145 @@
-# entrega-7-api-agentes
-# Pre-entrega 7 | API de agentes con LangGraph
+# Trabajo Final · AI Engineering | Sistema multiagente con RAG
 
-Sistema multiagente desarrollado en Python que expone una API REST con FastAPI, ejecuta tareas en segundo plano, utiliza Redis para persistencia de estados y checkpoints, incorpora aprobación humana (HITL) y registra trazas mediante LangSmith.
+Proyecto que integra **FastAPI**, **LangGraph**, agentes especializados, recuperación documental híbrida (**BM25 + Pinecone**), **Redis Stack**, revisión humana (**HITL**) y observabilidad con **LangSmith**.
 
-## 1. Tecnologías utilizadas
+> Rama de entrega: `trabajo-final`. Requiere Python 3.12 (Docker). Las claves API, el índice externo de Pinecone y el proyecto de LangSmith son servicios externos: no se almacenan en Git.
 
-- **Python:** lenguaje principal.
-- **LangGraph:** orquestación del flujo multiagente.
-- **LangChain y OpenAI:** integración de modelos de lenguaje y herramientas.
-- **FastAPI:** API REST para gestionar tareas.
-- **Redis Stack:** almacenamiento de estados y checkpoints mediante RedisSaver.
-- **LangSmith:** observabilidad, trazas, tiempos, tokens y costos.
-- **Docker Compose:** ejecución de Redis.
-- **HTTPX:** pruebas de solicitudes concurrentes.
+## Arquitectura
 
-## 2. Arquitectura
-
-El sistema utiliza un grafo de agentes especializados:
-
-- **Supervisor:** determina qué agente debe intervenir.
-- **Research:** consulta los pedidos mediante `buscar_pedidos`.
-- **Analyst:** calcula cantidad, total y promedio mediante `analizar_pedidos`.
-- **Validation:** comprueba que los agentes hayan ejecutado sus herramientas.
-- **Synthesis:** construye la respuesta final.
-- **Human Review:** interrumpe la ejecución para solicitar aprobación humana.
-
-Flujo general:
-
-```text
-POST /tasks
-     |
-     v
- Supervisor
-     |
-     +--> Research ----+
-     |                 |
-     +--> Analyst -----+--> Supervisor
-     |                        |
-     +<-----------------------+
-     |
-     v
- Validation
-     |
-     +--> Supervisor (si necesita correcciones)
-     |
-     v
- Synthesis
-     |
-     v
- Human Review
-     |
-     +--> WAITING_APPROVAL
-              |
-              v
-       POST /tasks/{job_id}/approve
-              |
-              +--> Aprobación: COMPLETED
-              |
-              +--> Rechazo: REJECTED
+```mermaid
+flowchart TD
+    A[POST /tasks] --> B[Supervisor: clasifica la solicitud una vez]
+    B --> C{Herramientas pendientes}
+    C -->|Documentación / pedidos| D[Research]
+    D --> E[consultar_documentacion: BM25 + Pinecone]
+    D --> F[buscar_pedidos: JSON local]
+    E --> B
+    F --> B
+    C -->|Cálculos comerciales| G[Analyst: analizar_pedidos]
+    G --> B
+    C -->|Sin herramientas pendientes| H[Validation]
+    H -->|Datos incompletos, hay intentos| B
+    H -->|Límite agotado| X[FAILED]
+    H -->|Validación aprobada| I[Synthesis]
+    I --> J[Human Review: interrupt]
+    J --> K[WAITING_APPROVAL]
+    K --> L[POST /tasks/id/approve]
+    L -->|Aprobado| M[COMPLETED]
+    L -->|Rechazado| N[REJECTED]
 ```
 
-## 3. Instalación
+Los seis nodos son `supervisor`, `research`, `analyst`, `validation`, `synthesis`, `human_review`. La planificación usa salida estructurada Pydantic; los especialistas, la síntesis, el grafo y el checkpointer disponen de API asíncrona (`ainvoke`, `aget_state`, `AsyncRedisSaver`). El recuperador híbrido expone `ainvoke`; internamente algunas integraciones pueden delegar operaciones bloqueantes a hilos.
 
-Clonar el repositorio:
+### Componentes
+
+- **Research:** consulta pedidos con `buscar_pedidos` o documentación técnica con `consultar_documentacion`.
+- **RAG:** BM25 local (peso 0,4) y Pinecone (peso 0,6), resultados con fuente y categoría. `app/rag/data` incluye cinco documentos Markdown de ejemplo. Hay cinco chunks con el corpus original; no se afirma calidad estadística con este conjunto reducido.
+- **Analyst:** cálculos comerciales mediante `analizar_pedidos`; no es necesario para preguntas documentales.
+- **Validation:** comprueba herramientas según el plan de cada solicitud. Si no se completa tras seis pasos, finaliza como `FAILED`, sin pasar a HITL.
+- **HITL:** `interrupt()` y `Command(resume=...)`, con decisión estructurada `approved` / `rejected`.
+- **Redis:** `task:{job_id}` para estados y checkpoints LangGraph mediante el `thread_id` de cada tarea.
+- **LangSmith:** captura trazas jerárquicas de nodos, LLM, tools, retrievers, tokens y latencia, siempre que el tracing esté habilitado.
+
+## Instalación desde cero con Docker Compose
 
 ```bash
-git clone https://github.com/AlvaroSanchez10/entrega-7-api-agentes.git
+git clone -b trabajo-final https://github.com/AlvaroSanchez10/entrega-7-api-agentes.git
 cd entrega-7-api-agentes
+cp .env.example .env
 ```
 
-Instalar dependencias:
+Editar `.env` con `OPENAI_API_KEY`, `PINECONE_API_KEY`, `LANGSMITH_API_KEY` (opcional para ejecución, necesaria para trazas), `LANGSMITH_PROJECT` y demás variables. **No subir `.env` al repositorio**. El valor `REDIS_URL=redis://redis:6379/0` está diseñado para Compose. No reemplazar `redis` por `localhost` dentro del contenedor.
 
 ```bash
-pip install -r requirements.txt
+docker compose up -d --build
+docker compose ps
+docker compose logs --tail=40 api
 ```
 
-Crear un archivo `.env` en la raíz del proyecto:
+API y Swagger: `http://localhost:8000/docs`.
 
-```dotenv
-OPENAI_API_KEY=tu_clave_de_openai
-OPENAI_MODEL=gpt-4.1-mini
+### Inicialización de Pinecone (solo la primera vez)
 
-REDIS_URL=redis://localhost:6379/0
-
-LANGSMITH_TRACING=true
-LANGSMITH_API_KEY=tu_clave_de_langsmith
-LANGSMITH_PROJECT=entrega-7-agentes
-```
-
-Las API Keys son privadas. El archivo `.env` no debe publicarse en GitHub.
-
-## 4. Iniciar Redis
-
-El proyecto utiliza Redis Stack para almacenar los estados de las tareas y los checkpoints de LangGraph.
-
-Iniciar el servicio:
+La API arranca sin inicializar Pinecone; cuando se utiliza la herramienta RAG, el índice debe existir y contener los vectores. **La creación del índice, la ingesta y las consultas pueden generar costos externos.**
 
 ```bash
-docker compose up -d
+docker compose run --rm api python -m app.rag.setup_pinecone
+# Una vez que el índice esté operativo:
+docker compose run --rm api python -m app.rag.ingest
 ```
 
-Verificar la conexión:
+Configuración prevista: índice `technical-rag-index`, namespace `dev`, AWS `us-east-1`, embeddings `text-embedding-3-small` (1536 dimensiones). Repetir la ingesta no es necesario para reiniciar la API; el índice se persiste en Pinecone.
+
+## API REST
+
+| Ruta | Entrada | Respuesta |
+|---|---|---|
+| `POST /tasks` | `{"prompt":"Consulta Redis en la documentación y cita fuentes."}` | `{"job_id":"UUID","status":"PENDING"}` |
+| `GET /tasks/{job_id}` | Sin body | `PENDING`, `RUNNING`, `WAITING_APPROVAL`, `COMPLETED`, `REJECTED`, `FAILED` |
+| `POST /tasks/{job_id}/approve` | `{"approved":true}` o `{"approved":false}` | `RUNNING`; luego consultar GET |
+
+Ejemplo de principio a fin:
 
 ```bash
-docker compose exec redis redis-cli ping
+curl -s -X POST http://localhost:8000/tasks -H 'Content-Type: application/json' \
+  -d '{"prompt":"Consultá documentación mediante RAG y explicá Redis citando redis.md."}'
+# Copiar el job_id recibido:
+curl -s http://localhost:8000/tasks/JOB_ID
+# Solo cuando el estado es WAITING_APPROVAL:
+curl -s -X POST http://localhost:8000/tasks/JOB_ID/approve \
+  -H 'Content-Type: application/json' -d '{"approved":true}'
+curl -s http://localhost:8000/tasks/JOB_ID
 ```
 
-Resultado esperado:
+La API crea tareas en segundo plano dentro del proceso: **no es una cola durable de producción**. Redis persiste estados y checkpoints, pero un reinicio puede dejar tareas `RUNNING` sin reprogramación automática. No hay autorización ni autenticación HTTP; se utiliza con fines académicos en un entorno de desarrollo.
 
-```text
-PONG
-```
+## Pruebas
 
-## 5. Iniciar FastAPI
-
-Ejecutar:
+Pruebas automatizadas sin llamadas pagas a OpenAI, Pinecone ni LangSmith:
 
 ```bash
-uvicorn app.api:app --host 0.0.0.0 --port 8000 --reload
+docker compose run --rm api python -m pytest -q
 ```
 
-La documentación interactiva estará disponible en:
+Incluyen endpoints, decisiones de HITL simuladas a nivel API, validación documental/comercial, límite de pasos, supervisor sin repetición y una prueba del **interrupt/resume real** de LangGraph usando `MemorySaver`.
 
-http://localhost:8000/docs
-
-Redis debe encontrarse activo antes de iniciar la API.
-
-## 6. Endpoints
-
-### POST /tasks
-
-Recibe una solicitud y devuelve inmediatamente un identificador de tarea.
-
-Ejemplo:
-
-```json
-{
-  "prompt": "Consulta los pedidos del cliente con ID 102 usando buscar_pedidos. Luego utiliza analyst y analizar_pedidos para calcular cantidad, total y promedio. Finalmente, valida los resultados."
-}
-```
-
-Respuesta inicial:
-
-```json
-{
-  "job_id": "identificador-uuid",
-  "status": "PENDING"
-}
-```
-
-La ejecución continúa en segundo plano.
-
-### GET /tasks/{job_id}
-
-Consulta el estado actual de una tarea.
-
-Estados contemplados:
-
-- `PENDING`: tarea recibida.
-- `RUNNING`: ejecución en curso.
-- `WAITING_APPROVAL`: pendiente de aprobación humana.
-- `COMPLETED`: ejecución finalizada.
-- `REJECTED`: rechazo del revisor humano.
-- `FAILED`: error durante la ejecución.
-
-### POST /tasks/{job_id}/approve
-
-Permite aprobar o rechazar una tarea pausada.
-
-Para aprobar:
-
-```json
-{
-  "approved": true
-}
-```
-
-Para rechazar:
-
-```json
-{
-  "approved": false
-}
-```
-
-La reanudación se implementa mediante `Command(resume=...)` de LangGraph.
-
-## 7. Persistencia con Redis
-
-El proyecto utiliza Redis para dos propósitos:
-
-**Estados de tareas:** cada ejecución tiene un `job_id` único que permite consultar su estado mediante FastAPI.
-
-**Checkpoints de LangGraph:** RedisSaver conserva el estado del grafo utilizando el mismo identificador como `thread_id`.
-
-Esto permite recuperar el estado de una ejecución y reanudar tareas interrumpidas por aprobación humana.
-
-## 8. Human-in-the-Loop (HITL)
-
-El nodo `human_review` utiliza `interrupt()` para suspender el grafo antes de su finalización.
-
-Durante la pausa:
-
-1. LangGraph conserva su estado en Redis.
-2. La API registra `WAITING_APPROVAL`.
-3. El usuario envía una decisión al endpoint de aprobación.
-4. LangGraph continúa utilizando `Command(resume=...)`.
-
-Se realizaron pruebas de aprobación y rechazo.
-
-La aprobación permitió continuar hasta `COMPLETED`. El rechazo también fue procesado correctamente y se implementó una clasificación diferenciada mediante `REJECTED`.
-
-## 9. Observabilidad con LangSmith
-
-Se configuró LangSmith mediante variables de entorno para registrar las ejecuciones del sistema.
-
-Las trazas permiten inspeccionar:
-
-- Llamadas al modelo de lenguaje.
-- Ejecución de agentes y herramientas.
-- Duración de las operaciones.
-- Tokens utilizados.
-- Costo estimado de las llamadas al modelo.
-
-El proyecto utiliza el nombre `entrega-7-agentes` para organizar las trazas.
-
-## 10. Prueba de concurrencia
-
-Se implementó `test_concurrencia.py` para enviar cinco solicitudes simultáneas a FastAPI utilizando HTTPX.
-
-Con Redis y FastAPI en funcionamiento, ejecutar:
+La prueba de concurrencia hace **cinco ejecuciones reales** y aprueba cada solicitud automáticamente al llegar a HITL, con un límite de 180 segundos por tarea; **consume OpenAI y puede consumir Pinecone**:
 
 ```bash
 python test_concurrencia.py
 ```
 
-El script registra el tiempo de respuesta HTTP, el tiempo hasta la finalización de cada tarea y los percentiles p95.
+No ejecutar como comprobación rutinaria. La medición actual de concurrencia debe repetirse tras cambios para obtener datos finales comparables.
 
-### Resultados obtenidos
+## Observabilidad y evidencia
 
-| Métrica | Resultado |
-|---|---|
-| Solicitudes concurrentes | 5 |
-| Tareas completadas | 5/5 |
-| Duración global | 14,67 segundos |
-| P95 respuesta POST | 0,046 segundos |
-| P95 ejecución completa | 14,66 segundos |
+Proyecto LangSmith configurado: `ai-engineering-trabajo-final`.
 
-Las cinco tareas finalizaron con estado `COMPLETED`.
+**Línea base real previa a la optimización** (consulta documental sobre Redis; obtenida desde LangSmith):
 
-La duración global y el p95 indican que las ejecuciones pudieron desarrollarse concurrentemente.
+| Métrica | Antes de optimizar |
+|---|---:|
+| Llamadas al modelo | 20 |
+| Tokens de LLM (registrados) | 28.913 |
+| Herramientas ejecutadas | 6 (5 RAG, 1 analizar_pedidos) |
+| Duración del grafo | 30,79 s |
 
-**Nota metodológica:** el p95 se calculó mediante interpolación lineal a partir de cinco observaciones. Los tiempos de ejecución completa incluyen el intervalo de consulta periódica de estados, aproximadamente de un segundo. Estas mediciones corresponden a una prueba puntual y no constituyen un benchmark exhaustivo de producción.
+Traza de línea base: `01a1a691-6ad7-7361-833a-5d81edbcd5a0`. La aprobación posterior quedó registrada como otra traza: `01a1a697-7625-764f-92ba-3255989a1092`. La traza del error antiguo es `01a1a68e-5ca7-710d-92e1-8d95f9a2d4e2`.
 
-## 11. Evidencias
+**Pendiente de medir**: una ejecución posterior a la optimización, uso de tokens, número de herramientas, latencias y capturas de **cinco trazas** exigidas en la consigna. No atribuir mejoras cuantificadas sin ejecutar esas mediciones.
 
-Las capturas de pantalla de las pruebas se organizan en la carpeta `screenshots/`.
+La carpeta `screenshots/` contiene capturas antiguas de la Pre-entrega 7 y no debe presentarse como evidencia de la versión final sin verificar fecha y correspondencia.
 
-Evidencias previstas:
+## Limitaciones conocidas
 
-- Trazas de ejecución en LangSmith, incluyendo tokens y costos.
-- Resultados de la prueba de concurrencia y latencias p95.
-- Tarea pausada en estado `WAITING_APPROVAL`.
-- Aprobación humana mediante Swagger.
-- Finalización correcta en `COMPLETED`.
-- Rechazo humano y resultado correspondiente.
+- Python 3.12 y servicios externos con credenciales válidas para la ejecución integral.
+- Pinecone requiere índice y documentos previamente cargados.
+- BM25 y el vector store pueden usar hilos internos aunque se invoquen con API asíncrona.
+- Pequeño corpus documental, sin evaluación de calidad concluyente.
+- El routing clasifica una vez con un LLM; si la clasificación inicial es errónea, la respuesta puede no cubrir la intención de la consulta.
+- El estado `RUNNING` no se recupera automáticamente tras caídas del proceso; el control concurrente de aprobaciones no está diseñado para producción.
+- Sin autenticación ni autorización de endpoints: usar solo en entorno restringido de demostración.
 
-## 12. Limitaciones y mejoras futuras
+## Autor
 
-Esta implementación demuestra las funcionalidades centrales de la pre-entrega. Para un despliegue de producción se recomienda incorporar autenticación, autorización de revisores, control de aprobaciones simultáneas, recuperación automática de trabajos pendientes tras reinicios, una cola persistente de tareas y pruebas de carga más extensas.
-
-También sería conveniente sustituir la identificación textual de rechazos por decisiones estructuradas dentro del grafo.
-
-## 13. Autor
-
-**Álvaro Sánchez**
-
-Proyecto desarrollado para la Pre-entrega 7 de AI Engineering, Coderhouse.
+Álvaro Sánchez · Trabajo Final de AI Engineering, Coderhouse.
