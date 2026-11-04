@@ -219,3 +219,7 @@ __marimo__/
 # Streamlit
 .streamlit/secrets.toml
 modulo6/
+
+# Archivos temporales de preparación
+evidencias-trabajo-final.zip
+/screenshots/0[1-9]_*.png
